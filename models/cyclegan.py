@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
+import argparse
 
 @dataclass
 class CycleGANConfig:
@@ -29,6 +30,12 @@ class CycleGANConfig:
     save_latest_freq: int = 5000
     print_freq: int = 100
     continue_train: bool = False
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--lmabda_A', type=float, default=10.0, help='weight for cycle loss (A -> B -> A)')
+    parser.add_argument('--lambda_B', type=float, default=10.0, help='weight for cycle loss (B -> A -> B)')
+    parser.add_argument('--lambda_identity', type=float, default=0.5, help='use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1')
 
 def make_generator(config):
     """Create a generator
@@ -61,6 +68,14 @@ class UnetGenerator(nn.Module):
         self.
 
 class CycleGAN(nn.Module):
+    """
+    A (source domain) <--> B (targer domain)
+    In CycleGAN, there are two generators: G_A: A --> B, G_B: B --> A
+    and two discriminators: D_A: G_A(A) vs. B, D_B: G_B(B) vs. A
+    In addition to GAN losses, CycleGAN also has lambda_A, lambda_B, and lambda_identity losses
+    Forward cycle consistency loss: lambda_A * ||G_B(G_A(A)) - A|| (A --> B --> A')
+    Backward cycle consistency loss: lambda_B * ||G_A(G_B(B)) - B|| (B --> A --> B')
+    """
     def __init__(self, config: CycleGANConfig):
         super().__init__(self, config)
         self.
