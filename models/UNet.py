@@ -5,10 +5,15 @@ from dataclasses import dataclass
 from typing import Optional
 import functools
 
+from transformers import Trainer, TrainingArguments
+
+
+
+
 @dataclass
 class UNetConfig:
-    num_downs: int = 8
-    ngf: int = 64
+    num_downs: int = 8 # number of downsample/upsample layers in UNet
+    ngf: int = 64 # number of filters in the last conv layer
     norm_layer = nn.BatchNorm2d
     use_dropout: bool = False
     input_nc: int = 3
@@ -81,8 +86,35 @@ class UNet(nn.Module):
         unet_block = UNetSkipConnectionBlock(self.config.ngf, self.config.ngf * 2, input_nc=None, submodule=unet_block, norm=self.config.norm_layer)
         self.model = UNetSkipConnectionBlock(self.config.output_nc, self.config.ngf, input_nc=self.config.input_nc, submodule=unet_block, outermost=True, norm=self.config.norm_layer)
 
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, x, label=None):
+        output = self.model(x)
+        if label is not None:
+            loss = F.kl_div(output, label) + F.mse_loss(output, label)
+        return output if label is None else (output, loss)
     
     def calc_num_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
+
+
+if __name__ == "__main__":
+    # as a sanity check, or simply for fun, running this script will train an UNet AutoEncoder on CIFAR10
+    config = UNetConfig()
+    model = UNet(config)
+
+    args = TrainingArguments(
+        output_dir="../unet_ae_results",
+        num_train_epochs=10,
+        per_device_train_batch_size=64,
+        per_device_eval_batch_size=64,
+        warmup_steps=500,
+        weight_decay=0.01,
+    )
+    trainer = Trainer(
+        model=model,
+        args=args,
+        train_dataset=None,
+        eval_dataset=None,
+        compute_metrics=None
+    )
+    print(model(x).shape)
