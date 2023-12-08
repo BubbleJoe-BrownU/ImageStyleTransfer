@@ -4,8 +4,14 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import Optional
 import functools
+import numpy as np
 
+# for training
 from transformers import Trainer, TrainingArguments
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+import torchvision.transforms as transforms
+from tqdm.auto import tqdm
 
 
 
@@ -13,7 +19,7 @@ from transformers import Trainer, TrainingArguments
 @dataclass
 class UNetConfig:
     num_downs: int = 8 # number of downsample/upsample layers in UNet
-    ngf: int = 64 # number of filters in the last conv layer
+    ngf: int = 32 # number of filters in the last conv layer
     norm_layer = nn.BatchNorm2d
     use_dropout: bool = False
     input_nc: int = 3
@@ -89,32 +95,87 @@ class UNet(nn.Module):
     def forward(self, x, label=None):
         output = self.model(x)
         if label is not None:
-            loss = F.kl_div(output, label) + F.mse_loss(output, label)
+            loss = 0.5 * F.kl_div(output, label) + F.mse_loss(output, label)
+            # loss = F.mse_loss(output, label)
         return output if label is None else (output, loss)
     
     def calc_num_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
     
+    def configure_optimizers(self, weight_decay: float = 0.1):
+        weight_decay_params = []
+        no_weight_decay_params = []
+        for p in self.parameters():
+            if p.dim() >= 2:
+                weight_decay_params.append(p)
+            else:
+                no_weight_decay_params.append(p)
+        
+        optimizer = torch.optim.AdamW(
+            params=[
+                {"params": weight_decay_params, "weight_decay": weight_decay}, 
+                {"params": no_weight_decay_params, "weight_decay": 0.0}
+            ],
+            lr = 1e-3
+        )
+        return optimizer
+
 
 
 if __name__ == "__main__":
     # as a sanity check, or simply for fun, running this script will train an UNet AutoEncoder on CIFAR10
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("Creating model: UNet")
     config = UNetConfig()
+    config.num_downs = 3
     model = UNet(config)
+    model.to(device)
+    optimizer = model.configure_optimizers()
+    
+    # Loading datasets
+    print("Loading dataset: CIFAR10")
+    preprocess = transforms.Compose(
+        [
+            transforms.ToTensor(), 
+        ]
+    )
+    dataset = load_dataset("cifar10")   
+#    dataset = dataset.map(lambda e: {"input": preprocess(e["img"])}, remove_columns=["img"])
+    batch_size = 64
+    
+    def data_collator(data):
+        inputs = [d["img"] for d in data]
+        inputs = torch.stack([preprocess(i) for i in inputs], dim=0)
+        return inputs
 
-    args = TrainingArguments(
-        output_dir="../unet_ae_results",
-        num_train_epochs=10,
-        per_device_train_batch_size=64,
-        per_device_eval_batch_size=64,
-        warmup_steps=500,
-        weight_decay=0.01,
-    )
-    trainer = Trainer(
-        model=model,
-        args=args,
-        train_dataset=None,
-        eval_dataset=None,
-        compute_metrics=None
-    )
-    print(model(x).shape)
+    # setup progress bar
+    train_len = len(dataset["train"])//batch_size
+    eval_len = len(dataset["test"])//batch_size
+    
+    
+    for i in range(10):
+        trainer_dataloader = DataLoader(dataset["train"], batch_size=batch_size, collate_fn=data_collator)
+        model.train()
+        pb = tqdm(range(train_len), desc="Training: ")
+        for input in trainer_dataloader:
+            input = input.to(device)
+            optimizer.zero_grad()
+            # in autoencoding tasks, inputs are used as labels
+            logits, loss = model(input, input)
+            loss.backward()
+            optimizer.step()
+            pb.set_postfix({'loss': loss.item()})
+            pb.update(1)
+
+        if (i+1) / 5 == 0:
+            model.eval()
+            test_dataloader = DataLoader(dataset["test"], batch_size=batch_size, collate_fn=data_collator)
+            pb = tqdm(range(train_len), desc="Evaluating: ")
+            for input in test_dataloader:
+                input = input.to(device)
+                with torch.no_grad():
+                    logits, loss = model(input, input)
+                pb.set_postfix({'loss': loss.item()})
+                pb.update(1)
+        
+    torch.save(model.state_dict(), "../unet_ae_results/model.pth")

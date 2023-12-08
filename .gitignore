@@ -1,0 +1,4 @@
+*.pth
+*.err
+*.out
+.ipynb_checkpoints
